@@ -307,25 +307,17 @@ async def check_boosty():
             logging.error(f"❌ Критическая ошибка сессии Boosty: {e}")
 
 
-# ================= АВТОНОМНЫЙ ЗАПУСК 24/7 =================
+# ================= АВТОНОМНЫЙ ЗАПУСК ДЛЯ GITHUB ACTIONS =================
 async def main():
     init_db()
     logging.info("💾 База данных подключена и готова.")
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_youtube, 'interval', minutes=15, max_instances=1)
-    scheduler.add_job(check_boosty, 'interval', minutes=15, max_instances=1)
-    scheduler.start()
-
+    # Выполняем ровно 1 проверку YouTube и Boosty
     await check_youtube()
     await asyncio.sleep(2)
     await check_boosty()
 
-    logging.info("🤖 Бот перешел в неубиваемый автономный режим 24/7!")
-
-    while True:
-        await asyncio.sleep(3600)
-
+    logging.info("✅ Проверка завершена! Скрипт отработал успешно.")
 
 if __name__ == "__main__":
     try:
