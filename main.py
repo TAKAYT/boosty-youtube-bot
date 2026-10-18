@@ -1,14 +1,17 @@
 import asyncio
 import logging
 import sqlite3
-import yt_dlp
 import aiohttp
+import xml.etree.ElementTree as ET
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = "8764943717:AAGiNmkBaIr2bz41soxW4UeHYG2jZv5Zz0E"
 GROUP_ID = "-5283586638"
 
-YOUTUBE_CHANNEL_URL = "https://www.youtube.com/channel/UCVIQOnICNIBcLshYisdechQ/videos"
+# RSS лента канала YouTube (работает без блокировок и куки)
+YOUTUBE_CHANNEL_ID = "UCVIQOnICNIBcLshYisdechQ"
+YOUTUBE_RSS_URL = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
+
 BOOSTY_BLOG_NAME = "darktaka"
 BOOSTY_POSTS_API = f"https://api.boosty.to/v1/blog/{BOOSTY_BLOG_NAME}/post/?limit=3"
 BOOSTY_BLOG_API = f"https://api.boosty.to/v1/blog/{BOOSTY_BLOG_NAME}/"
@@ -51,16 +54,6 @@ def mark_item_posted(table: str, item_id: str):
         cursor = conn.cursor()
         cursor.execute(f"INSERT OR IGNORE INTO {table} ({column}) VALUES (?)", (str(item_id),))
         conn.commit()
-
-
-def format_duration(seconds) -> str:
-    if not seconds:
-        return "Неизвестно"
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
 
 
 # ================= ПОИСК КАРТИНОК BOOSTY =================
@@ -121,7 +114,7 @@ async def send_tg_photo(photo_url: str, caption: str) -> bool:
             async with session.post(tg_api_url, data=form) as resp:
                 return resp.status == 200
     except Exception as e:
-        logging.warning(f"⚠️ Ошибка отправки фото: {e}")
+        logging.warning(f"⚠️ Ошибка отправки фото в Telegram: {e}")
         return False
 
 
@@ -141,60 +134,52 @@ async def send_tg_text(text: str) -> bool:
             async with session.post(tg_api_url, json=payload) as resp:
                 return resp.status == 200
     except Exception as e:
-        logging.error(f"❌ Ошибка отправки текста: {e}")
+        logging.error(f"❌ Ошибка отправки текста в Telegram: {e}")
         return False
 
 
-# ================= ПАРСИНГ YOUTUBE =================
+# ================= ПАРСИНГ YOUTUBE (ЧЕРЕЗ RSS) =================
 async def check_youtube():
-    logging.info("🔍 YouTube: Проверка новых роликов...")
-    ydl_opts = {
-        'playlist_items': '1',
-        'extract_flat': True,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 15
-    }
-
-    def fetch_info():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(YOUTUBE_CHANNEL_URL, download=False)
-
+    logging.info("🔍 YouTube: Проверка новых роликов через RSS...")
+    timeout = aiohttp.ClientTimeout(total=15)
     try:
-        info = await asyncio.to_thread(fetch_info)
-        entries = info.get('entries', [])
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(YOUTUBE_RSS_URL) as resp:
+                if resp.status == 200:
+                    xml_data = await resp.text()
+                    root = ET.fromstring(xml_data)
+                    ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
 
-        if entries:
-            video = entries[0]
-            video_id = video.get('id')
+                    entry = root.find('atom:entry', ns)
+                    if entry is not None:
+                        video_id = entry.find('yt:videoId', ns).text
+                        title = entry.find('atom:title', ns).text
+                        uploader = root.find('atom:title', ns).text
+                        video_url = f"https://youtu.be/{video_id}"
 
-            if video_id and not is_item_posted('posted_videos', video_id):
-                title = video.get('title', 'Новый ролик на YouTube!')
-                uploader = video.get('uploader', 'Канал')
-                duration = format_duration(video.get('duration'))
-                video_url = video.get('url') or f"https://youtu.be/{video_id}"
+                        if not is_item_posted('posted_videos', video_id):
+                            text = (
+                                f"🎬 <b>{title}</b>\n\n"
+                                f"👤 Автор: {uploader}\n\n"
+                                f"🔗 Смотреть: {video_url}"
+                            )
 
-                text = (
-                    f"🎬 <b>{title}</b>\n\n"
-                    f"👤 Автор: {uploader}\n"
-                    f"⏱ Длительность: {duration}\n\n"
-                    f"🔗 Смотреть: {video_url}"
-                )
+                            maxres_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+                            hq_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
-                maxres_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
-                hq_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                            sent = await send_tg_photo(maxres_url, text)
+                            if not sent:
+                                sent = await send_tg_photo(hq_url, text)
 
-                sent = await send_tg_photo(maxres_url, text)
-                if not sent:
-                    sent = await send_tg_photo(hq_url, text)
-
-                if sent:
-                    mark_item_posted('posted_videos', video_id)
-                    logging.info(f"✅ YouTube: Опубликован новый ролик — {title}")
-            else:
-                logging.info("💤 YouTube: Новых роликов нет (уже в базе).")
+                            if sent:
+                                mark_item_posted('posted_videos', video_id)
+                                logging.info(f"✅ YouTube: Опубликован новый ролик — {title}")
+                        else:
+                            logging.info("💤 YouTube: Новых роликов нет (уже в базе).")
+                else:
+                    logging.error(f"❌ Ошибка получения RSS YouTube. Код: {resp.status}")
     except Exception as e:
-        logging.warning(f"⚠️ YouTube временно недоступен или заблокирован сервером: {e}")
+        logging.error(f"❌ Ошибка при проверке YouTube через RSS: {e}")
 
 
 # ================= ПАРСИНГ BOOSTY =================
@@ -270,17 +255,16 @@ async def check_boosty():
         logging.error(f"❌ Критическая ошибка при работе с Boosty: {e}")
 
 
-# ================= ЗАПУСК ОДНОЙ ПРОВЕРКИ =================
+# ================= ОДНОКРАТНЫЙ ЗАПУСК ДЛЯ GITHUB ACTIONS =================
 async def main():
     init_db()
     logging.info("💾 База данных подключена.")
 
-    # Выполняем ровно 1 разовую проверку
     await check_youtube()
     await asyncio.sleep(2)
     await check_boosty()
 
-    logging.info("✅ Проверка успешно завершена. Скрипт закрывается.")
+    logging.info("✅ Проверка успешно завершена.")
 
 
 if __name__ == "__main__":
