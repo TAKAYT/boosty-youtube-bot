@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = "8764943717:AAGiNmkBaIr2bz41soxW4UeHYG2jZv5Zz0E"
-GROUP_ID = "-5283586638"
+GROUP_ID = "@PoteranSusheter"
 
 # RSS лента канала YouTube (работает без блокировок и куки)
 YOUTUBE_CHANNEL_ID = "UCVIQOnICNIBcLshYisdechQ"
